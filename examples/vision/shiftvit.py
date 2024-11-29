@@ -60,7 +60,6 @@ These are the hyperparameters that we have chosen for the experiment.
 Please feel free to tune them.
 """
 
-
 class Config(object):
     # DATA
     batch_size = 256
@@ -151,7 +150,9 @@ behave differently. Refer to the
 for more details.
 """
 
-
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="get_augmentation_model"
+)
 def get_augmentation_model():
     """Build the data augmentation model."""
     data_augmentation = keras.Sequential(
@@ -220,7 +221,9 @@ The Shift Block as shown in Fig. 3, comprises of the following:
 The MLP block is intended to be a stack of densely-connected layers
 """
 
-
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="mlp"
+)
 class MLP(layers.Layer):
     """Get the MLP layer for each shift block.
 
@@ -243,9 +246,10 @@ class MLP(layers.Layer):
                 layers.Dense(
                     units=initial_filters,
                     activation=keras.activations.gelu,
+                    name="mlp_dense_1",
                 ),
                 layers.Dropout(rate=self.mlp_dropout_rate),
-                layers.Dense(units=input_channels),
+                layers.Dense(units=input_channels, name="mlp_dense_2"),
                 layers.Dropout(rate=self.mlp_dropout_rate),
             ]
         )
@@ -264,7 +268,9 @@ similar to Dropout, but it operates on a block of layers rather
 than on individual nodes present inside a layer.
 """
 
-
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="droppath"
+)
 class DropPath(layers.Layer):
     """Drop Path also known as the Stochastic Depth layer.
 
@@ -326,7 +332,9 @@ directions.
 The entire procedure is explained in the Fig. 4.
 """
 
-
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="shiftvitblock"
+)
 class ShiftViTBlock(layers.Layer):
     """A unit ShiftViT Block
 
@@ -453,7 +461,9 @@ spatially and increasing the features up channel wise. We use a Conv2D layer to 
 patches.
 """
 
-
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="patchmerging"
+)
 class PatchMerging(layers.Layer):
     """The Patch Merging layer.
 
@@ -491,6 +501,9 @@ block and patch merging) is a design choice we picked for better code reusabilit
 
 # Note: This layer will have a different depth of stacking
 # for different stages on the model.
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="stackedshiftblocks"
+)
 class StackedShiftBlocks(layers.Layer):
     """The layer containing stacked ShiftViTBlocks.
 
@@ -580,6 +593,10 @@ class StackedShiftBlocks(layers.Layer):
         )
         return config
 
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
 
 """
 ## The ShiftViT model
@@ -620,7 +637,7 @@ class ShiftViTModel(keras.Model):
         epsilon,
         mlp_dropout_rate,
         stochastic_depth_rate,
-        classifier=layers.Dense(config.num_classes),
+        classifier=layers.Dense(config.num_classes, name="classifier"),
         global_avg_pool=layers.GlobalAveragePooling2D(),
         patch_projection=layers.Conv2D(
             filters=config.projected_dim,
@@ -674,11 +691,11 @@ class ShiftViTModel(keras.Model):
         config = super().get_config()
         config.update(
             {
-                "data_augmentation": self.data_augmentation,
-                "patch_projection": self.patch_projection,
-                "stages": self.stages,
-                "global_avg_pool": self.global_avg_pool,
-                "classifier": self.classifier,
+                "data_augmentation": keras.layers.serialize(self.data_augmentation),
+                "patch_projection": keras.layers.serialize(self.patch_projection),
+                "stages": [keras.layers.serialize(stage) for stage in self.stages],
+                "global_avg_pool": keras.layers.serialize(self.global_avg_pool),
+                "classifier":  keras.layers.serialize(self.classifier),
                 "projected_dim": self.projected_dim,
                 "patch_size": self.patch_size,
                 "num_shift_blocks_per_stages": self.num_shift_blocks_per_stages,
@@ -691,6 +708,66 @@ class ShiftViTModel(keras.Model):
             }
         )
         return config
+
+    @classmethod
+    def from_config(cls, config):
+        data_augmentation = keras.layers.deserialize(config.pop("data_augmentation"))
+        patch_projection = keras.layers.deserialize(config.pop("patch_projection"))
+        stages = [keras.layers.deserialize(stage) for stage in config.pop("stages")]
+        global_avg_pool = keras.layers.deserialize(config.pop("global_avg_pool"))
+        classifier = keras.layers.deserialize(config.pop("classifier"))
+
+        return cls(
+            data_augmentation=data_augmentation,
+            patch_projection=patch_projection,
+            stages=stages,
+            global_avg_pool=global_avg_pool,
+            classifier=classifier,
+             projected_dim=config.pop("projected_dim"),
+            patch_size=config.pop("patch_size"),
+            num_shift_blocks_per_stages=config.pop("num_shift_blocks_per_stages"),
+            epsilon=config.pop("epsilon"),
+            mlp_dropout_rate=config.pop("mlp_dropout_rate"),
+            stochastic_depth_rate=config.pop("stochastic_depth_rate"),
+            num_div=config.pop("num_div"),
+            shift_pixel=config.pop("shift_pixel"),
+            mlp_expand_ratio=config.pop("mlp_expand_ratio"),
+            **config
+        )
+
+    def get_build_config(self):
+        return {
+            "data_augmentation": self.data_augmentation,
+            "patch_projection": self.patch_projection,
+            "stages": self.stages,
+            "global_avg_pool": self.global_avg_pool,
+            "classifier": self.classifier,
+            "projected_dim": self.projected_dim,
+            "patch_size": self.patch_size,
+            "num_shift_blocks_per_stages": self.num_shift_blocks_per_stages,
+            "epsilon": self.epsilon,
+            "mlp_dropout_rate": self.mlp_dropout_rate,
+            "stochastic_depth_rate": self.stochastic_depth_rate,
+            "num_div": self.num_div,
+            "shift_pixel": self.shift_pixel,
+            "mlp_expand_ratio": self.mlp_expand_ratio,
+        }
+
+    def build_from_config(self, config):
+        self.data_augmentation = config["data_augmentation"]
+        self.patch_projection = config["patch_projection"]
+        self.stages = config["stages"]
+        self.global_avg_pool = config["global_avg_pool"]
+        self.classifier = config["classifier"]
+        self.projected_dim = config["projected_dim"]
+        self.patch_size = config["patch_size"]
+        self.num_shift_blocks_per_stages = config["num_shift_blocks_per_stages"]
+        self.epsilon = config["epsilon"]
+        self.mlp_dropout_rate = config["mlp_dropout_rate"]
+        self.stochastic_depth_rate = config["stochastic_depth_rate"]
+        self.num_div = config["num_div"]
+        self.shift_pixel = config["shift_pixel"]
+        self.mlp_expand_ratio = config["mlp_expand_ratio"]
 
     def call(self, images):
         augmented_images = self.data_augmentation(images)
@@ -733,6 +810,9 @@ cosine decay.
 # https://www.kaggle.com/ashusma/training-rfcx-tensorflow-tpu-effnet-b2.
 #
 # The original implementation has been adapted to use Keras 3 ops.
+@keras.saving.register_keras_serializable(
+    package="my_shiftvit_package", name="warmupcosine"
+)
 class WarmUpCosine(keras.optimizers.schedules.LearningRateSchedule):
     """A LearningRateSchedule that uses a warmup cosine decay schedule."""
 
@@ -812,7 +892,6 @@ class WarmUpCosine(keras.optimizers.schedules.LearningRateSchedule):
             "warmup_steps": self.warmup_steps,
         }
         return config
-
 
 """
 ## Compile and train the model
@@ -905,7 +984,16 @@ unzip -q inference_set.zip
 # At loading time, these objects need to be passed for reconstruction of the model
 saved_model = keras.saving.load_model(
     "ShiftViT.keras",
-    custom_objects={"WarmUpCosine": WarmUpCosine, "AdamW": keras.optimizers.AdamW},
+    custom_objects={
+        "WarmUpCosine": WarmUpCosine,
+        "ShiftViTBlock": ShiftViTBlock,
+        "MLP": MLP,
+        "DropPath": DropPath,
+        "ShiftViTModel": ShiftViTModel,
+        "StackedShiftBlocks": StackedShiftBlocks,
+        "PatchMerging": PatchMerging,
+        "get_augmentation_model": get_augmentation_model,
+    },
 )
 
 """
